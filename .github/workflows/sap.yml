@@ -80,6 +80,8 @@ jobs:
                 echo "启动失败: $name"
                 FAILED_APPS+=("$name")
                 DEPLOY_FAILED=true
+                echo "删除启动失败实例: $name"
+                run_cf delete "$name" -f || echo "⚠️ 删除失败: $name"
                 continue
               }
               echo "App $name started successfully"
@@ -90,7 +92,7 @@ jobs:
                 echo "创建失败: $name"
                 FAILED_APPS+=("$name")
                 DEPLOY_FAILED=true
-                echo "尝试删除失败的实例: $name"
+                echo "删除创建失败实例: $name"
                 run_cf delete "$name" -f || echo "⚠️ 删除失败: $name"
                 continue
               }
