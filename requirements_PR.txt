@@ -1,0 +1,4 @@
+patchright
+BeautifulSoup4
+requests
+pytz
