@@ -1,0 +1,5 @@
+patchright
+BeautifulSoup4
+ddddocr
+requests
+pytz
