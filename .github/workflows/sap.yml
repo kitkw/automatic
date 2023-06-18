@@ -1,0 +1,58 @@
+name: sap
+
+on:
+  schedule:
+    - cron: "0,30 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  scale:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ACCOUNT_SECRET: ${{ fromJSON(vars.SAP) }}
+    steps:
+      - name: Setup Cloud Foundry CLI
+        run: |
+          # 获取版本号
+          version=$(curl -s https://api.github.com/repos/cloudfoundry/cli/releases/latest | jq -r .tag_name)
+          echo "Latest version: $version"
+          
+          # 拼接文件名
+          filename="cf8-cli_${version#v}_linux_x86-64.tgz"
+          
+          url="https://github.com/cloudfoundry/cli/releases/download/${version}/${filename}"
+          echo "Downloading from: $url"
+          
+          # 下载并校验
+          curl -fLO "$url" || { echo "下载失败，URL 不存在。"; exit 1; }
+          file "$filename" | grep -q 'gzip compressed data' || { echo "文件不是 gzip 格式"; cat "$filename"; exit 1; }
+          
+          # 解压并授权
+          tar -xzf "$filename"
+          chmod +x cf8
+
+      - name: Parse and Login
+        shell: bash
+        run: |
+          printf '%s' "${{ secrets[matrix.ACCOUNT_SECRET] }}" > account.txt
+
+          # 第一行是 APP_NAME
+          APP_NAME=$(head -n 1 account.txt | tr -d '\r')
+
+          # 第二行开始是登录命令
+          CREDENTIALS=$(tail -n +2 account.txt | tr -d '\r')
+
+          # 删除敏感文件
+          rm -f account.txt
+
+          echo "::add-mask::$APP_NAME"
+          echo "::add-mask::$CREDENTIALS"
+
+          # 静默登录（不输出命令）
+          echo "Logging in..."
+          eval "$CREDENTIALS" >/dev/null 2>&1 || { echo "登录失败"; exit 1; }
+
+          echo "Starting app..."
+          ./cf8 start "$APP_NAME" >/dev/null 2>&1 || { echo "启动失败"; exit 1; }
