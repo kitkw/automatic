@@ -1,0 +1,29 @@
+name: Keep Repo Alive (Minimal Branch)
+
+on:
+  schedule:
+    - cron: "8 21 1,15 * *"
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create orphan keepalive branch with empty commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir repo && cd repo
+          git init
+          git checkout --orphan keepalive
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "🕒 Keepalive: $(date -u)" > keepalive.txt
+          git add keepalive.txt
+          git commit -m "chore: keepalive $(date -u)"
+
+          git remote add origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git push -f origin keepalive
