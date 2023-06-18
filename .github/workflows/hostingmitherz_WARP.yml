@@ -1,0 +1,91 @@
+name: hostingmitherz
+
+on:
+  schedule:
+    - cron: "18 21 * * *"
+  workflow_dispatch:
+
+env:
+  SCRIPT_NAME: hostingmitherz
+  REQUIREMENTS_FILE: requirements_PR.txt
+  API_SCRIPT: github_api.sh
+
+jobs:
+  build:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: [HOSTINGMITHERZ_ACCOUNTS]
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: ${{ env.REQUIREMENTS_FILE }}
+
+      - name: Install requirements
+        run: |
+          pip install -r ${{ env.REQUIREMENTS_FILE }}
+          patchright install chrome
+
+      - name: Download script and cookies from private repo
+        run: |
+          # 加载 GitHub API 函数
+          source scripts/${{ env.API_SCRIPT }}
+          
+          # 下载主脚本
+          download_file "${{ env.SCRIPT_NAME }}.py" "${{ env.SCRIPT_NAME }}.py" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+          
+          # 检查下载是否成功
+          if [ -f "${{ env.SCRIPT_NAME }}.py" ]; then
+            echo "Script file ${{ env.SCRIPT_NAME }}.py downloaded successfully"
+          else
+            echo "Failed to download script file ${{ env.SCRIPT_NAME }}.py"
+          fi
+          
+          # 创建 tmp 目录
+          mkdir -p tmp
+          
+          # 获取并下载 cookie 文件
+          get_file_list "tmp" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}" "${{ env.SCRIPT_NAME }}.*json" | \
+          while read file_path; do
+            if [ ! -z "$file_path" ]; then
+              download_file "$file_path" "tmp/$(basename $file_path)" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+            fi
+          done
+
+      - name: Set up WARP
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual        # Optional. Support [ ipv4, ipv6, dual ]. Default is dual.
+          mode: client    # Optional. Support [ wireguard, client ]. Default is wireguard.
+
+      - name: Run python script
+        run: python3 ${{ env.SCRIPT_NAME }}.py
+        env:
+          ACCOUNT_SECRET: ${{ secrets[matrix.account] }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+
+      - name: Upload updated cookies to private repo
+        run: |
+          # 加载 GitHub API 函数
+          source scripts/${{ env.API_SCRIPT }}
+          
+          # 上传更新的文件
+          if [ -d "tmp" ] && [ "$(ls -A tmp)" ]; then
+            for file in tmp/*.json; do
+              if [ -f "$file" ]; then
+                upload_file "$file" "tmp/$(basename $file)" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+              fi
+            done
+            echo "Successfully uploaded updated cookies to private repo"
+          else
+            echo "No files to upload"
+          fi

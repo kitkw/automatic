@@ -1,0 +1,126 @@
+name: space-hosting
+
+on:
+  schedule:
+    - cron: "24 21 * * *"
+  workflow_dispatch:
+
+env:
+  SCRIPT_NAME: space-hosting
+  REQUIREMENTS_FILE: requirements_PR.txt
+  API_SCRIPT: github_api.sh
+  # STORAGE_ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN_SPACE_HOSTING }}
+  # STORAGE_REPO_NAME: ${{ secrets.PRIVATE_REPO_NAME_SPACE_HOSTING }}
+
+jobs:
+  build:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ACCOUNT_SECRET: ${{ fromJSON(vars.SPACE_HOSTING) }}
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: ${{ env.REQUIREMENTS_FILE }}
+
+      - name: Install requirements
+        run: |
+          pip install -r ${{ env.REQUIREMENTS_FILE }}
+      
+      - name: Install Chrome for Testing and set CHROMEPATH
+        run: |
+          npx @puppeteer/browsers install chrome@stable
+          CHROMEPATH=$(find ./chrome -type f -name chrome | grep chrome-linux64/chrome | sort | tail -n 1)
+          if [ -z "$CHROMEPATH" ]; then
+            echo "❌ Chrome executable not found!"
+            exit 1
+          fi
+          echo "CHROMEPATH=$CHROMEPATH" >> $GITHUB_ENV
+
+      - name: Download and extract extensions
+        run: |
+          # 下载 extensions.zip (-s 参数让 curl 静默运行，不显示进度条和下载信息)
+          echo "Downloading extensions.zip..."
+          curl -s -L -o extensions.zip "${{ secrets.EXTENSIONS_DOWNLOAD_URL }}"
+          
+          # 检查下载是否成功 (-q 参数让 unzip 静默运行，不显示解压的详细文件列表)
+          if [ -f "extensions.zip" ]; then
+            echo "Download successful, extracting extensions..."
+            unzip -q -o extensions.zip
+            rm extensions.zip
+            echo "Extensions extracted successfully"
+          else
+            echo "Failed to download extensions.zip"
+            exit 1
+          fi
+
+      - name: Download script from default private repo
+        run: |
+          # 加载 GitHub API 函数
+          source scripts/${{ env.API_SCRIPT }}
+          
+          # 下载主脚本
+          download_file "${{ env.SCRIPT_NAME }}.py" "${{ env.SCRIPT_NAME }}.py" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+          
+          # 检查下载是否成功
+          if [ -f "${{ env.SCRIPT_NAME }}.py" ]; then
+            echo "Script file ${{ env.SCRIPT_NAME }}.py downloaded successfully"
+          else
+            echo "Failed to download script file ${{ env.SCRIPT_NAME }}.py"
+          fi
+
+      # - name: Clone storage private repo as tmp directory
+      #   run: |
+      #     # 配置 Git 用户信息
+      #     git config --global user.name "github-actions[bot]"
+      #     git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+      #     # 直接克隆存储私库为 tmp 目录
+      #     git clone "https://x-access-token:${{ env.STORAGE_ACCESS_TOKEN }}@github.com/${{ secrets.PRIVATE_REPO_OWNER }}/${{ env.STORAGE_REPO_NAME }}.git" tmp
+
+      - name: Set up WARP
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual        # Optional. Support [ ipv4, ipv6, dual ]. Default is dual.
+          mode: client    # Optional. Support [ wireguard, client ]. Default is wireguard.
+
+      - name: Run python script
+        run: python3 ${{ env.SCRIPT_NAME }}.py
+        env:
+          CHROMEPATH: ${{ env.CHROMEPATH }}
+          ACCOUNT_SECRET: ${{ secrets[matrix.ACCOUNT_SECRET] }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+
+      # - name: Update tmp directory in private repo and reset history
+      #   run: |
+      #     # 直接进入 tmp 目录
+      #     cd tmp
+          
+      #     # 静默添加所有更改
+      #     git add . > /dev/null 2>&1
+          
+      #     # 静默提交更改
+      #     git commit -m "Update tmp directory: $(date -u)" > /dev/null 2>&1
+          
+      #     # 静默创建孤立分支来重置历史
+      #     git checkout --orphan temp_branch > /dev/null 2>&1
+      #     git add . > /dev/null 2>&1
+      #     git commit -m "Fresh start with updated tmp directory: $(date -u)" > /dev/null 2>&1
+          
+      #     # 静默删除主分支并重命名临时分支
+      #     git branch -D main > /dev/null 2>&1
+      #     git branch -m main > /dev/null 2>&1
+          
+      #     # 静默强制推送到主分支，完全重置历史
+      #     git push -f origin main > /dev/null 2>&1
+          
+      #     echo "Successfully updated tmp directory and completely reset history in tmp storage private repo"

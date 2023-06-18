@@ -1,0 +1,48 @@
+name: gigalixir
+
+on:
+  schedule:
+    - cron: "*/3 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scale:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ACCOUNT_SECRET: ${{ fromJSON(vars.GIGALIXIR) }}
+    steps:
+      - name: Parse account secret
+        shell: bash
+        run: |
+          printf '%s' "${{ secrets[matrix.ACCOUNT_SECRET] }}" > account.txt
+          DOMAIN=$(head -n 1 account.txt | tr -d '\r')
+          APP_NAME=$(sed -n '2p' account.txt | tr -d '\r')
+          tail -n +3 account.txt > ~/.netrc
+          chmod 600 ~/.netrc
+          echo "DOMAIN=$DOMAIN" >> "$GITHUB_ENV"
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+
+      - name: Check domain health
+        id: health_check
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$DOMAIN" || echo "000")
+          echo "status=$HTTP_STATUS" >> "$GITHUB_OUTPUT"
+          echo "Domain $DOMAIN returned status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "Domain is healthy (200), skipping scale operation"
+          else
+            echo "Domain returned $HTTP_STATUS, proceeding with scale operation"
+          fi
+
+      - name: Install Gigalixir CLI
+        if: steps.health_check.outputs.status != '200'
+        run: |
+          pip install gigalixir
+
+      - name: Scale app
+        if: steps.health_check.outputs.status != '200'
+        run: |
+          gigalixir ps:scale -a "${{ env.APP_NAME }}" -r 1

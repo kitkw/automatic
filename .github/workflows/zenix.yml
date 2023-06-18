@@ -1,0 +1,58 @@
+name: zenix
+
+on:
+  schedule:
+    - cron: "40 21 * * *"
+  workflow_dispatch:
+
+env:
+  SCRIPT_NAME: zenix
+  API_SCRIPT: github_api.sh
+
+jobs:
+  build:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: [ZENIX_ACCOUNTS]
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: pip install pytz requests beautifulsoup4
+
+      - name: Download script and cookies from private repo
+        run: |
+          # 加载 GitHub API 函数
+          source scripts/${{ env.API_SCRIPT }}
+          
+          # 下载主脚本
+          download_file "${{ env.SCRIPT_NAME }}.py" "${{ env.SCRIPT_NAME }}.py" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+          
+          # 检查下载是否成功
+          if [ -f "${{ env.SCRIPT_NAME }}.py" ]; then
+            echo "Script file ${{ env.SCRIPT_NAME }}.py downloaded successfully"
+          else
+            echo "Failed to download script file ${{ env.SCRIPT_NAME }}.py"
+          fi
+          
+          # 创建 tmp 目录
+          mkdir -p tmp
+          
+          # 获取并下载 cookie 文件
+          get_file_list "tmp" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}" "${{ env.SCRIPT_NAME }}.*json" | \
+          while read file_path; do
+            if [ ! -z "$file_path" ]; then
+              download_file "$file_path" "tmp/$(basename $file_path)" "${{ secrets.ACCESS_TOKEN }}" "${{ secrets.PRIVATE_REPO_OWNER }}" "${{ secrets.PRIVATE_REPO_NAME }}"
+            fi
+          done
+
+      - name: Run python script
+        run: python3 ${{ env.SCRIPT_NAME }}.py
+        env:
+          ACCOUNT_SECRET: ${{ secrets[matrix.account] }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
