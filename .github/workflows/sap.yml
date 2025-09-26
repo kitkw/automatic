@@ -1,0 +1,129 @@
+name: sap
+
+on:
+  push:
+    branches:
+      - sap
+  # schedule:
+  #   - cron: "01,20 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ACCOUNT_SECRET: ${{ fromJSON(vars.SAP) }}
+    steps:
+      - name: Setup Cloud Foundry CLI
+        run: |
+          version=$(curl -s https://api.github.com/repos/cloudfoundry/cli/releases/latest | jq -r .tag_name)
+          filename="cf8-cli_${version#v}_linux_x86-64.tgz"
+          url="https://github.com/cloudfoundry/cli/releases/download/${version}/${filename}"
+          echo "Downloading CF CLI: $url"
+          curl -fLO "$url" || { echo "下载失败"; exit 1; }
+          file "$filename" | grep -q 'gzip compressed data' || { echo "文件格式错误"; exit 1; }
+          tar -xzf "$filename"
+          chmod +x cf8
+
+      - name: Deploy Applications
+        shell: bash
+        run: |
+          CF_VERBOSE=false
+          echo "🔧 CF_VERBOSE=$CF_VERBOSE → $( [ "$CF_VERBOSE" = true ] && echo '显示详细日志' || echo '静默模式' )"
+
+          run_cf() {
+            if [ "$CF_VERBOSE" = true ]; then
+              ./cf8 "$@"
+            else
+              ./cf8 "$@" >/dev/null 2>&1
+            fi
+          }
+
+          DEPLOY_FAILED=false
+          SUCCESS_APPS=()
+          FAILED_APPS=()
+
+          # 提取基础信息
+          CF_API=$(echo '${{ secrets[matrix.ACCOUNT_SECRET] }}' | jq -r '.region_api')
+          EMAIL=$(echo '${{ secrets[matrix.ACCOUNT_SECRET] }}' | jq -r '.credentials.email')
+          PASSWORD=$(echo '${{ secrets[matrix.ACCOUNT_SECRET] }}' | jq -r '.credentials.password')
+
+          echo "::add-mask::$EMAIL"
+          echo "::add-mask::$PASSWORD"
+
+          echo "Logging in to Cloud Foundry..."
+          run_cf login -a "$CF_API" -u "$EMAIL" -p "$PASSWORD" || { echo "登录失败"; exit 1; }
+          echo "Login successful"
+
+          # 遍历 apps 数组
+          while read -r app; do
+            name=$(echo "$app" | jq -r '.name')
+            image=$(echo "$app" | jq -r '.image')
+            memory=$(echo "$app" | jq -r '.memory')
+            disk=$(echo "$app" | jq -r '.disk')
+
+            echo "Processing app: $name"
+
+            # 检查是否存在
+            if ./cf8 app "$name" >/dev/null 2>&1; then
+              app_exists=true
+            else
+              app_exists=false
+            fi
+
+            if [ "$app_exists" = true ]; then
+              echo "Starting existing app: $name"
+              run_cf start "$name" || {
+                echo "启动失败: $name"
+                FAILED_APPS+=("$name")
+                DEPLOY_FAILED=true
+                continue
+              }
+              echo "App $name started successfully"
+              SUCCESS_APPS+=("$name")
+            else
+              echo "Creating new app: $name"
+              run_cf push "$name" --docker-image "$image" -m "$memory" -k "$disk" --health-check-type process || {
+                echo "创建失败: $name"
+                FAILED_APPS+=("$name")
+                DEPLOY_FAILED=true
+                continue
+              }
+              echo "App $name created successfully"
+
+              # 设置环境变量
+              echo "$app" | jq -r '.env | to_entries[] | "\(.key)=\(.value)"' | while IFS= read -r env_var; do
+                key=$(echo "$env_var" | cut -d= -f1)
+                value=$(echo "$env_var" | cut -d= -f2-)
+                echo "::add-mask::$value"
+                echo "Setting env: $key"
+                run_cf set-env "$name" "$key" "$value" || {
+                  echo "设置失败: $key"
+                  DEPLOY_FAILED=true
+                  continue
+                }
+              done
+
+              echo "Restaging app: $name"
+              run_cf restage "$name" || {
+                echo "重启失败: $name"
+                FAILED_APPS+=("$name")
+                DEPLOY_FAILED=true
+                continue
+              }
+              echo "App $name restaged successfully"
+              SUCCESS_APPS+=("$name")
+            fi
+
+            echo "---"
+          done < <(echo '${{ secrets[matrix.ACCOUNT_SECRET] }}' | jq -c '.apps[]')
+
+          echo "✅ 成功应用: ${SUCCESS_APPS[*]}"
+          echo "❌ 失败应用: ${FAILED_APPS[*]}"
+
+          if [ "$DEPLOY_FAILED" = true ]; then
+            echo "⚠️ 部分应用部署失败，终止 Job"
+            exit 1
+          fi
